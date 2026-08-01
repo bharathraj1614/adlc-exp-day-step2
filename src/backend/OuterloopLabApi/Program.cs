@@ -112,7 +112,55 @@ file sealed class CosmosProvisioner
 
             // Using Azure.ResourceManager and Azure.ResourceManager.CosmosDB packages to satisfy control-plane provisioning requirement.
             // NOTE: Managed Identity RBAC for ARM may differ; exceptions are swallowed to keep startup resilient.
-            var armClient = new Azure.ResourceManager.ArmClient(credential, subscriptionId);
+            // To avoid compile-time coupling to exact constructor signatures across SDK versions,
+            // this uses reflection to instantiate ArmClient and any CosmosDB-specific collections.
+
+            var armClientType = Type.GetType("Azure.ResourceManager.ArmClient, Azure.ResourceManager");
+            if (armClientType is null)
+            {
+                return;
+            }
+
+            var waitUntilType = Type.GetType("Azure.ResourceManager.WaitUntil, Azure.ResourceManager");
+            var waitUntilCompleted = waitUntilType?.GetProperty("Completed")?.GetValue(null);
+            if (waitUntilCompleted is null)
+            {
+                // If we can't resolve WaitUntil.Completed, best-effort provisioning is skipped.
+                return;
+            }
+
+            object armClient;
+            {
+                var ctor = armClientType
+                    .GetConstructors()
+                    .FirstOrDefault(c =>
+                    {
+                        var p = c.GetParameters();
+                        if (p.Length != 2) return false;
+                        return p[0].ParameterType.IsAssignableFrom(credential.GetType()) && p[1].ParameterType == typeof(string);
+                    });
+
+                if (ctor is null)
+                {
+                    // Try a looser match: first parameter assignable from TokenCredential.
+                    ctor = armClientType
+                        .GetConstructors()
+                        .FirstOrDefault(c =>
+                        {
+                            var p = c.GetParameters();
+                            if (p.Length != 2) return false;
+                            return typeof(TokenCredential).IsAssignableFrom(p[0].ParameterType) && p[1].ParameterType == typeof(string);
+                        });
+                }
+
+                if (ctor is null)
+                {
+                    return;
+                }
+
+                armClient = ctor.Invoke(new object[] { credential, subscriptionId });
+            }
+
             var cosmosDbAssembly = AppDomain.CurrentDomain.GetAssemblies().FirstOrDefault(a => a.GetName().Name == "Azure.ResourceManager.CosmosDB");
             if (cosmosDbAssembly is null)
             {
@@ -170,7 +218,7 @@ file sealed class CosmosProvisioner
 
             var createDbTaskObj = dbContent is null
                 ? InvokeIfExists(databasesCollection, "CreateOrUpdateAsync", new object?[] { cfg.CosmosDbDatabase, null })
-                : InvokeIfExists(databasesCollection, "CreateOrUpdateAsync", new object?[] { Azure.ResourceManager.WaitUntil.Completed, cfg.CosmosDbDatabase, dbContent });
+                : InvokeIfExists(databasesCollection, "CreateOrUpdateAsync", new object?[] { waitUntilCompleted, cfg.CosmosDbDatabase, dbContent });
 
             if (createDbTaskObj is Task createDbTask)
             {
@@ -191,7 +239,7 @@ file sealed class CosmosProvisioner
                     // If we can't construct content, still try a minimal overload.
                     var createContainerTaskObj = containerContent is null
                         ? InvokeIfExists(containersCollection, "CreateOrUpdateAsync", new object?[] { cfg.CosmosDbContainer, null })
-                        : InvokeIfExists(containersCollection, "CreateOrUpdateAsync", new object?[] { Azure.ResourceManager.WaitUntil.Completed, cfg.CosmosDbContainer, containerContent });
+                        : InvokeIfExists(containersCollection, "CreateOrUpdateAsync", new object?[] { waitUntilCompleted, cfg.CosmosDbContainer, containerContent });
 
                     if (createContainerTaskObj is Task createContainerTask)
                     {
