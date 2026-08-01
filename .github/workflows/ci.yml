@@ -45,13 +45,13 @@ jobs:
           dotnet-version: "10.0.x"
 
       - name: Restore dependencies
-        run: dotnet restore
+         run: dotnet restore OuterloopLabApi.sln
 
       - name: Run unit tests
-        run: dotnet test Tests/Tests.csproj --verbosity normal
+         run: dotnet test OuterloopLabApi.sln --verbosity normal
 
       - name: Build backend
-        run: dotnet build -c Release
+         run: dotnet build -c Release OuterloopLabApi.sln
 
   pr-review:
     if: always()
